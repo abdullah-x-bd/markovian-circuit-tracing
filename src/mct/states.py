@@ -28,7 +28,7 @@ def probe_state_recovery(
         random_state=seed,
         stratify=y,
     )
-    clf = LogisticRegression(max_iter=1000, multi_class="auto")
+    clf = LogisticRegression(max_iter=1000, solver="lbfgs")
     clf.fit(x_train, y_train)
     pred = clf.predict(x_test)
     return float(accuracy_score(y_test, pred))
@@ -40,7 +40,7 @@ def cluster_internal_states(
     seed: int = 0,
 ) -> np.ndarray:
     flat = activations.reshape(-1, activations.shape[-1])
-    km = KMeans(n_clusters=n_states, random_state=seed, n_init="auto")
+    km = KMeans(n_clusters=n_states, random_state=seed, n_init=10)
     labels = km.fit_predict(flat)
     return labels.reshape(activations.shape[0], activations.shape[1])
 
