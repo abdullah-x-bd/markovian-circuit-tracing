@@ -8,10 +8,13 @@ import numpy as np
 import torch
 
 from mct.data import (
+    bayes_predictive_distribution,
     default_hmm,
     forced_state_next_token_distribution,
     make_lm_tensors,
     sample_hmm_sequences,
+    sequence_cross_entropy,
+    unigram_distribution,
 )
 from mct.interventions import state_forcing_kl
 from mct.model import TinyTransformer, TransformerConfig, count_parameters
@@ -46,6 +49,32 @@ def pad_visible_distribution_for_bos(visible_probs: np.ndarray, bos_token: int) 
     padded = np.zeros((visible_probs.shape[0], bos_token + 1), dtype=visible_probs.dtype)
     padded[:, :bos_token] = visible_probs
     return padded
+
+
+def repeated_distribution_loss(tokens: np.ndarray, distribution: np.ndarray) -> float:
+    probs = np.broadcast_to(distribution, (*tokens.shape, distribution.shape[0]))
+    return sequence_cross_entropy(tokens, probs)
+
+
+def shuffled_state_baseline(true_transition: np.ndarray, states: np.ndarray, seed: int) -> dict[str, float]:
+    rng = np.random.default_rng(seed)
+    shuffled = states.copy().reshape(-1)
+    rng.shuffle(shuffled)
+    shuffled = shuffled.reshape(states.shape)
+    shuffled_t = estimate_transition_matrix(shuffled, n_states=true_transition.shape[0])
+    return {f"shuffled_{k}": v for k, v in transition_report(true_transition, shuffled_t).items()}
+
+
+def random_state_baseline(true_transition: np.ndarray, states: np.ndarray, seed: int) -> dict[str, float]:
+    rng = np.random.default_rng(seed)
+    random_states = rng.integers(0, true_transition.shape[0], size=states.shape)
+    random_t = estimate_transition_matrix(random_states, n_states=true_transition.shape[0])
+    return {f"random_{k}": v for k, v in transition_report(true_transition, random_t).items()}
+
+
+def true_state_sanity_check(true_transition: np.ndarray, states: np.ndarray) -> dict[str, float]:
+    true_empirical_t = estimate_transition_matrix(states, n_states=true_transition.shape[0])
+    return {f"true_state_empirical_{k}": v for k, v in transition_report(true_transition, true_empirical_t).items()}
 
 
 def main() -> None:
@@ -113,6 +142,12 @@ def main() -> None:
     transition_metrics = transition_report(hmm.transition, estimated_t)
     markov_metrics = markov_order_accuracy(remapped, n_states=hmm.n_states)
 
+    bayes_probs = bayes_predictive_distribution(hmm, val_tokens)
+    bayes_loss = sequence_cross_entropy(val_tokens, bayes_probs)
+    uniform_loss = float(np.log(hmm.vocab_size))
+    unigram_probs = unigram_distribution(train_tokens, vocab_size=hmm.vocab_size)
+    unigram_loss = repeated_distribution_loss(val_tokens, unigram_probs)
+
     centroids = state_centroids(acts, remapped, n_states=hmm.n_states)
     ideal_visible_forced = np.stack(
         [forced_state_next_token_distribution(hmm, s) for s in range(hmm.n_states)],
@@ -140,9 +175,16 @@ def main() -> None:
         "parameter_count": count_parameters(model),
         "final_train_loss": result.train_loss[-1],
         "final_val_loss": evaluate_loss(model, val_x, val_y, batch_size=args.batch_size),
+        "bayes_optimal_loss": bayes_loss,
+        "uniform_baseline_loss": uniform_loss,
+        "unigram_baseline_loss": unigram_loss,
+        "model_excess_loss_over_bayes": evaluate_loss(model, val_x, val_y, batch_size=args.batch_size) - bayes_loss,
         "probe_state_recovery_accuracy": probe_acc,
         "cluster_state_recovery_accuracy": cluster_acc,
         **transition_metrics,
+        **true_state_sanity_check(hmm.transition, val_states),
+        **shuffled_state_baseline(hmm.transition, remapped, args.seed + 101),
+        **random_state_baseline(hmm.transition, remapped, args.seed + 202),
         **markov_metrics,
         **forced_kl,
     }
