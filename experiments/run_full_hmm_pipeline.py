@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def pad_visible_distribution_for_bos(visible_probs: np.ndarray, bos_token: int) -> np.ndarray:
+    padded = np.zeros((visible_probs.shape[0], bos_token + 1), dtype=visible_probs.dtype)
+    padded[:, :bos_token] = visible_probs
+    return padded
+
+
 def main() -> None:
     args = parse_args()
     out_dir = Path(args.output_dir)
@@ -108,10 +114,11 @@ def main() -> None:
     markov_metrics = markov_order_accuracy(remapped, n_states=hmm.n_states)
 
     centroids = state_centroids(acts, remapped, n_states=hmm.n_states)
-    ideal_forced = np.stack(
+    ideal_visible_forced = np.stack(
         [forced_state_next_token_distribution(hmm, s) for s in range(hmm.n_states)],
         axis=0,
     )
+    ideal_forced = pad_visible_distribution_for_bos(ideal_visible_forced, bos_token=bos_token)
     n_force = min(args.forcing_samples, val_x.shape[0])
     forced_kl = state_forcing_kl(
         model,
