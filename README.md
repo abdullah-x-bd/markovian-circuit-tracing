@@ -8,6 +8,19 @@ The core test is deliberately exact. We train a tiny transformer on sequences ge
 
 A transformer trained on a process with known hidden Markov dynamics can learn internal feature states whose transition structure approximates the true latent transition matrix. Those states can then be tested with patching, state forcing, causal scrubbing, and transition-matrix recovery.
 
+## Run from GitHub
+
+You can run the experiment without touching code.
+
+1. Open the repository on GitHub.
+2. Go to the Actions tab.
+3. Select `Run HMM Experiment`.
+4. Click `Run workflow`.
+5. Choose `smoke` for a quick test or `full` for the main run.
+6. Open the completed run and download the artifact named `mct-hmm-...-results`.
+
+The job summary will show `metrics.json`. The artifact contains the metrics and plots.
+
 ## Experiment spine
 
 1. Generate synthetic sequences from a known four-state HMM.
@@ -52,9 +65,11 @@ docs/
   experiment_plan.md
 tests/
   test_hmm.py
+.github/workflows/
+  run-hmm-experiment.yml
 ```
 
-## Install
+## Install locally
 
 ```bash
 python -m venv .venv
@@ -70,13 +85,28 @@ python -m venv .venv
 pip install -e .
 ```
 
-## Run the first experiment
+## Run locally
 
 ```bash
 python experiments/run_full_hmm_pipeline.py
 ```
 
-Expected outputs are written to `runs/hmm_4state_demo/`.
+Fast local smoke run
+
+```bash
+python experiments/run_full_hmm_pipeline.py \
+  --output-dir runs/hmm_smoke \
+  --epochs 2 \
+  --train-sequences 1200 \
+  --val-sequences 400 \
+  --seq-len 48 \
+  --d-model 96 \
+  --n-layers 2 \
+  --n-heads 4 \
+  --d-mlp 192
+```
+
+Expected outputs are written to `runs/`.
 
 ## Core metrics
 
