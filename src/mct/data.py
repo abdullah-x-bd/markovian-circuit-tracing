@@ -89,6 +89,34 @@ def bayes_next_token_distribution(hmm: HMM, beliefs: np.ndarray) -> np.ndarray:
     return next_state_prior @ hmm.emission
 
 
+def bayes_predictive_distribution(hmm: HMM, tokens: np.ndarray) -> np.ndarray:
+    """Return P(x_t | x_<t) for each sequence position."""
+    batch, seq_len = tokens.shape
+    predictive = np.zeros((batch, seq_len, hmm.vocab_size), dtype=np.float64)
+
+    for n in range(batch):
+        prior = hmm.initial.copy()
+        for t in range(seq_len):
+            predictive[n, t] = prior @ hmm.emission
+            likelihood = hmm.emission[:, tokens[n, t]]
+            posterior = prior * likelihood
+            posterior = posterior / posterior.sum()
+            prior = posterior @ hmm.transition
+
+    return predictive
+
+
+def sequence_cross_entropy(tokens: np.ndarray, probs: np.ndarray, eps: float = 1e-12) -> float:
+    chosen = np.take_along_axis(probs, tokens[..., None], axis=-1).squeeze(-1)
+    return float(-np.log(np.clip(chosen, eps, 1.0)).mean())
+
+
+def unigram_distribution(tokens: np.ndarray, vocab_size: int, smoothing: float = 1e-6) -> np.ndarray:
+    counts = np.bincount(tokens.reshape(-1), minlength=vocab_size).astype(np.float64)
+    counts += smoothing
+    return counts / counts.sum()
+
+
 def forced_state_next_token_distribution(hmm: HMM, state_id: int) -> np.ndarray:
     return hmm.transition[state_id] @ hmm.emission
 
