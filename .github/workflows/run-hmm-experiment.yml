@@ -1,0 +1,115 @@
+name: Run HMM Experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "Experiment preset"
+        required: true
+        default: "smoke"
+        type: choice
+        options:
+          - smoke
+          - full
+      epochs:
+        description: "Override epochs. Leave blank to use preset."
+        required: false
+        default: ""
+      train_sequences:
+        description: "Override train sequence count. Leave blank to use preset."
+        required: false
+        default: ""
+      val_sequences:
+        description: "Override validation sequence count. Leave blank to use preset."
+        required: false
+        default: ""
+
+jobs:
+  run-hmm-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Choose preset values
+        id: preset
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.preset }}" = "full" ]; then
+            echo "epochs=8" >> "$GITHUB_OUTPUT"
+            echo "train_sequences=8000" >> "$GITHUB_OUTPUT"
+            echo "val_sequences=2000" >> "$GITHUB_OUTPUT"
+            echo "seq_len=64" >> "$GITHUB_OUTPUT"
+            echo "d_model=128" >> "$GITHUB_OUTPUT"
+            echo "n_layers=2" >> "$GITHUB_OUTPUT"
+            echo "n_heads=4" >> "$GITHUB_OUTPUT"
+            echo "d_mlp=256" >> "$GITHUB_OUTPUT"
+          else
+            echo "epochs=2" >> "$GITHUB_OUTPUT"
+            echo "train_sequences=1200" >> "$GITHUB_OUTPUT"
+            echo "val_sequences=400" >> "$GITHUB_OUTPUT"
+            echo "seq_len=48" >> "$GITHUB_OUTPUT"
+            echo "d_model=96" >> "$GITHUB_OUTPUT"
+            echo "n_layers=2" >> "$GITHUB_OUTPUT"
+            echo "n_heads=4" >> "$GITHUB_OUTPUT"
+            echo "d_mlp=192" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply manual overrides
+        id: params
+        shell: bash
+        run: |
+          EPOCHS="${{ github.event.inputs.epochs }}"
+          TRAIN_SEQUENCES="${{ github.event.inputs.train_sequences }}"
+          VAL_SEQUENCES="${{ github.event.inputs.val_sequences }}"
+
+          if [ -z "$EPOCHS" ]; then EPOCHS="${{ steps.preset.outputs.epochs }}"; fi
+          if [ -z "$TRAIN_SEQUENCES" ]; then TRAIN_SEQUENCES="${{ steps.preset.outputs.train_sequences }}"; fi
+          if [ -z "$VAL_SEQUENCES" ]; then VAL_SEQUENCES="${{ steps.preset.outputs.val_sequences }}"; fi
+
+          echo "epochs=$EPOCHS" >> "$GITHUB_OUTPUT"
+          echo "train_sequences=$TRAIN_SEQUENCES" >> "$GITHUB_OUTPUT"
+          echo "val_sequences=$VAL_SEQUENCES" >> "$GITHUB_OUTPUT"
+
+      - name: Run Markovian Circuit Tracing HMM pipeline
+        run: |
+          python experiments/run_full_hmm_pipeline.py \
+            --output-dir runs/hmm_${{ github.event.inputs.preset }} \
+            --epochs ${{ steps.params.outputs.epochs }} \
+            --train-sequences ${{ steps.params.outputs.train_sequences }} \
+            --val-sequences ${{ steps.params.outputs.val_sequences }} \
+            --seq-len ${{ steps.preset.outputs.seq_len }} \
+            --d-model ${{ steps.preset.outputs.d_model }} \
+            --n-layers ${{ steps.preset.outputs.n_layers }} \
+            --n-heads ${{ steps.preset.outputs.n_heads }} \
+            --d-mlp ${{ steps.preset.outputs.d_mlp }}
+
+      - name: Show metrics in job summary
+        shell: bash
+        run: |
+          echo "# Markovian Circuit Tracing HMM metrics" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Preset: ${{ github.event.inputs.preset }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat runs/hmm_${{ github.event.inputs.preset }}/metrics.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload experiment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mct-hmm-${{ github.event.inputs.preset }}-results
+          path: runs/hmm_${{ github.event.inputs.preset }}/
