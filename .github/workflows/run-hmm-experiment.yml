@@ -28,6 +28,9 @@ jobs:
   run-hmm-experiment:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      MPLBACKEND: Agg
+      PIP_DISABLE_PIP_VERSION_CHECK: 1
 
     steps:
       - name: Check out repository
@@ -37,12 +40,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      - name: Install package
+      - name: Install CPU dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy scipy scikit-learn matplotlib pyyaml tqdm pytest
+          pip install -e . --no-deps
+
+      - name: Run tests
+        run: |
+          python -m pytest -q
 
       - name: Choose preset values
         id: preset
@@ -98,18 +106,25 @@ jobs:
             --d-mlp ${{ steps.preset.outputs.d_mlp }}
 
       - name: Show metrics in job summary
+        if: always()
         shell: bash
         run: |
           echo "# Markovian Circuit Tracing HMM metrics" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Preset: ${{ github.event.inputs.preset }}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo '```json' >> "$GITHUB_STEP_SUMMARY"
-          cat runs/hmm_${{ github.event.inputs.preset }}/metrics.json >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f runs/hmm_${{ github.event.inputs.preset }}/metrics.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat runs/hmm_${{ github.event.inputs.preset }}/metrics.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "metrics.json was not produced. Check the failed step logs above." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload experiment artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mct-hmm-${{ github.event.inputs.preset }}-results
           path: runs/hmm_${{ github.event.inputs.preset }}/
+          if-no-files-found: warn
