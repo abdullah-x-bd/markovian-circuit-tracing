@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -7,7 +8,6 @@ import numpy as np
 import torch
 
 from mct.data import (
-    bayes_filter,
     default_hmm,
     forced_state_next_token_distribution,
     make_lm_tensors,
@@ -21,25 +21,63 @@ from mct.train import collect_activations, evaluate_loss, train_model
 from mct.transition import estimate_transition_matrix, markov_order_accuracy, transition_report
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the Markovian Circuit Tracing HMM pipeline")
+    parser.add_argument("--output-dir", type=str, default="runs/hmm_4state_demo")
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--seq-len", type=int, default=64)
+    parser.add_argument("--train-sequences", type=int, default=8000)
+    parser.add_argument("--val-sequences", type=int, default=2000)
+    parser.add_argument("--epochs", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--d-model", type=int, default=128)
+    parser.add_argument("--n-layers", type=int, default=2)
+    parser.add_argument("--n-heads", type=int, default=4)
+    parser.add_argument("--d-mlp", type=int, default=256)
+    parser.add_argument("--activation-name", type=str, default="resid_post_1")
+    parser.add_argument("--forcing-position", type=int, default=20)
+    parser.add_argument("--forcing-samples", type=int, default=512)
+    parser.add_argument("--num-threads", type=int, default=2)
+    return parser.parse_args()
+
+
 def main() -> None:
-    out_dir = Path("runs/hmm_4state_demo")
+    args = parse_args()
+    out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    seed = 7
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+    torch.set_num_threads(args.num_threads)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     hmm = default_hmm()
     bos_token = hmm.vocab_size
-    seq_len = 64
 
-    train_tokens, train_states = sample_hmm_sequences(hmm, 8000, seq_len, seed=seed)
-    val_tokens, val_states = sample_hmm_sequences(hmm, 2000, seq_len, seed=seed + 1)
+    train_tokens, _ = sample_hmm_sequences(
+        hmm,
+        args.train_sequences,
+        args.seq_len,
+        seed=args.seed,
+    )
+    val_tokens, val_states = sample_hmm_sequences(
+        hmm,
+        args.val_sequences,
+        args.seq_len,
+        seed=args.seed + 1,
+    )
 
     train_x, train_y = make_lm_tensors(train_tokens, bos_token=bos_token)
     val_x, val_y = make_lm_tensors(val_tokens, bos_token=bos_token)
 
-    cfg = TransformerConfig(vocab_size=hmm.vocab_size + 1, seq_len=seq_len)
+    cfg = TransformerConfig(
+        vocab_size=hmm.vocab_size + 1,
+        seq_len=args.seq_len,
+        d_model=args.d_model,
+        n_layers=args.n_layers,
+        n_heads=args.n_heads,
+        d_mlp=args.d_mlp,
+    )
     model = TinyTransformer(cfg)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
@@ -50,16 +88,20 @@ def main() -> None:
         train_y,
         val_x,
         val_y,
-        epochs=8,
-        batch_size=256,
-        lr=3e-4,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
     )
 
-    activation_name = "resid_post_1"
-    acts = collect_activations(model, val_x, activation_name=activation_name).numpy()
-    probe_acc = probe_state_recovery(acts, val_states, seed=seed)
+    acts = collect_activations(
+        model,
+        val_x,
+        activation_name=args.activation_name,
+        batch_size=args.batch_size,
+    ).numpy()
+    probe_acc = probe_state_recovery(acts, val_states, seed=args.seed)
 
-    discovered = cluster_internal_states(acts, n_states=hmm.n_states, seed=seed)
+    discovered = cluster_internal_states(acts, n_states=hmm.n_states, seed=args.seed)
     remapped, cluster_acc = best_label_match(discovered, val_states, n_states=hmm.n_states)
     estimated_t = estimate_transition_matrix(remapped, n_states=hmm.n_states)
     transition_metrics = transition_report(hmm.transition, estimated_t)
@@ -70,20 +112,27 @@ def main() -> None:
         [forced_state_next_token_distribution(hmm, s) for s in range(hmm.n_states)],
         axis=0,
     )
+    n_force = min(args.forcing_samples, val_x.shape[0])
     forced_kl = state_forcing_kl(
         model,
-        val_x[:512],
+        val_x[:n_force],
         centroids,
         ideal_forced,
-        activation_name=activation_name,
-        position=20,
-        batch_size=128,
+        activation_name=args.activation_name,
+        position=args.forcing_position,
+        batch_size=min(args.batch_size, 128),
     )
 
     metrics = {
+        "device": device,
+        "seed": args.seed,
+        "seq_len": args.seq_len,
+        "train_sequences": args.train_sequences,
+        "val_sequences": args.val_sequences,
+        "epochs": args.epochs,
         "parameter_count": count_parameters(model),
         "final_train_loss": result.train_loss[-1],
-        "final_val_loss": evaluate_loss(model, val_x, val_y),
+        "final_val_loss": evaluate_loss(model, val_x, val_y, batch_size=args.batch_size),
         "probe_state_recovery_accuracy": probe_acc,
         "cluster_state_recovery_accuracy": cluster_acc,
         **transition_metrics,
