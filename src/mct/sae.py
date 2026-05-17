@@ -17,13 +17,23 @@ class SAEResult:
 
 
 class SparseAutoencoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int):
+    def __init__(self, input_dim: int, hidden_dim: int, top_k: int | None = None):
         super().__init__()
         self.encoder = nn.Linear(input_dim, hidden_dim)
         self.decoder = nn.Linear(hidden_dim, input_dim)
+        self.top_k = top_k
+
+    def _apply_top_k(self, z: torch.Tensor) -> torch.Tensor:
+        if self.top_k is None or self.top_k <= 0 or self.top_k >= z.shape[-1]:
+            return z
+        values, indexes = torch.topk(z, k=self.top_k, dim=-1)
+        sparse = torch.zeros_like(z)
+        sparse.scatter_(dim=-1, index=indexes, src=values)
+        return sparse
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.relu(self.encoder(x))
+        z = torch.relu(self.encoder(x))
+        return self._apply_top_k(z)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         return self.decoder(z)
@@ -52,6 +62,7 @@ def train_sae(
     lr: float = 1e-3,
     max_samples: int | None = 50000,
     seed: int = 0,
+    top_k: int | None = None,
 ) -> tuple[SparseAutoencoder, SAEResult]:
     torch.manual_seed(seed)
     flat = flatten_activations(activations, max_samples=max_samples, seed=seed)
@@ -60,7 +71,7 @@ def train_sae(
     flat = (flat - mean) / std
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SparseAutoencoder(input_dim=flat.shape[-1], hidden_dim=hidden_dim).to(device)
+    model = SparseAutoencoder(input_dim=flat.shape[-1], hidden_dim=hidden_dim, top_k=top_k).to(device)
     model.register_buffer("activation_mean", torch.tensor(mean, dtype=torch.float32, device=device))
     model.register_buffer("activation_std", torch.tensor(std, dtype=torch.float32, device=device))
 
