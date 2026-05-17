@@ -46,11 +46,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forcing-samples", type=int, default=512)
     parser.add_argument("--num-threads", type=int, default=2)
     parser.add_argument("--run-sae", action="store_true")
+    parser.add_argument("--run-sae-sweep", action="store_true")
     parser.add_argument("--sae-hidden-dim", type=int, default=256)
     parser.add_argument("--sae-epochs", type=int, default=5)
     parser.add_argument("--sae-l1-coef", type=float, default=1e-3)
     parser.add_argument("--sae-max-samples", type=int, default=50000)
+    parser.add_argument("--sae-sweep-hidden-dims", type=str, default="128,256,512")
+    parser.add_argument("--sae-sweep-l1-coefs", type=str, default="0.003,0.01,0.03")
     return parser.parse_args()
+
+
+def parse_int_list(value: str) -> list[int]:
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def parse_float_list(value: str) -> list[float]:
+    return [float(item.strip()) for item in value.split(",") if item.strip()]
 
 
 def pad_visible_distribution_for_bos(visible_probs: np.ndarray, bos_token: int) -> np.ndarray:
@@ -108,6 +119,71 @@ def state_pipeline_metrics(
         **prefixed(prefix, markov_order_accuracy(remapped, n_states=true_transition.shape[0])),
     }
     return metrics, remapped, estimated_t
+
+
+def run_sae_state_pipeline(
+    activations: np.ndarray,
+    true_states: np.ndarray,
+    true_transition: np.ndarray,
+    seed: int,
+    hidden_dim: int,
+    l1_coef: float,
+    epochs: int,
+    batch_size: int,
+    max_samples: int,
+    prefix: str,
+) -> tuple[dict[str, float], np.ndarray, np.ndarray]:
+    sae, sae_result = train_sae(
+        activations,
+        hidden_dim=hidden_dim,
+        l1_coef=l1_coef,
+        epochs=epochs,
+        batch_size=batch_size,
+        max_samples=max_samples,
+        seed=seed,
+    )
+    sae_features = encode_activations(sae, activations)
+    sae_metrics, sae_states, sae_t = state_pipeline_metrics(
+        sae_features,
+        true_states,
+        true_transition,
+        seed,
+        prefix=prefix,
+    )
+    sae_metrics.update(
+        {
+            f"{prefix}_hidden_dim": hidden_dim,
+            f"{prefix}_epochs": epochs,
+            f"{prefix}_l1_coef": l1_coef,
+            f"{prefix}_reconstruction_mse": sae_result.reconstruction_mse,
+            f"{prefix}_mean_l1": sae_result.mean_l1,
+            f"{prefix}_active_fraction": sae_result.active_fraction,
+        }
+    )
+    return sae_metrics, sae_states, sae_t
+
+
+def compact_sae_row(metrics: dict[str, float], prefix: str) -> dict[str, float]:
+    keys = [
+        "hidden_dim",
+        "epochs",
+        "l1_coef",
+        "reconstruction_mse",
+        "mean_l1",
+        "active_fraction",
+        "probe_state_recovery_accuracy",
+        "cluster_state_recovery_accuracy",
+        "rowwise_kl",
+        "frobenius_error",
+        "stationary_l1",
+        "spectral_error",
+        "order0_accuracy",
+        "order1_accuracy",
+        "order2_accuracy",
+        "order1_gain_over_order0",
+        "order2_gain_over_order1",
+    ]
+    return {key: metrics[f"{prefix}_{key}"] for key in keys}
 
 
 def main() -> None:
@@ -226,37 +302,76 @@ def main() -> None:
     }
 
     if args.run_sae:
-        sae, sae_result = train_sae(
+        sae_metrics, _, sae_t = run_sae_state_pipeline(
             acts,
+            val_states,
+            hmm.transition,
+            seed=args.seed,
             hidden_dim=args.sae_hidden_dim,
             l1_coef=args.sae_l1_coef,
             epochs=args.sae_epochs,
             batch_size=max(args.batch_size, 512),
             max_samples=args.sae_max_samples,
-            seed=args.seed,
-        )
-        sae_features = encode_activations(sae, acts)
-        sae_metrics, sae_states, sae_t = state_pipeline_metrics(
-            sae_features,
-            val_states,
-            hmm.transition,
-            args.seed,
             prefix="sae",
         )
-        metrics.update(
-            {
-                "sae_hidden_dim": args.sae_hidden_dim,
-                "sae_epochs": args.sae_epochs,
-                "sae_l1_coef": args.sae_l1_coef,
-                "sae_reconstruction_mse": sae_result.reconstruction_mse,
-                "sae_mean_l1": sae_result.mean_l1,
-                "sae_active_fraction": sae_result.active_fraction,
-                **sae_metrics,
-            }
-        )
+        metrics.update(sae_metrics)
         np.save(out_dir / "sae_estimated_transition.npy", sae_t)
         save_matrix_heatmap(sae_t, "SAE recovered transition", out_dir / "sae_estimated_transition.png")
         save_matrix_heatmap(hmm.transition - sae_t, "SAE transition difference", out_dir / "sae_transition_difference.png")
+
+    if args.run_sae_sweep:
+        sweep_rows = []
+        best_row = None
+        best_metrics = None
+        best_t = None
+        hidden_dims = parse_int_list(args.sae_sweep_hidden_dims)
+        l1_coefs = parse_float_list(args.sae_sweep_l1_coefs)
+
+        for hidden_dim in hidden_dims:
+            for l1_coef in l1_coefs:
+                safe_l1 = str(l1_coef).replace(".", "p").replace("-", "m")
+                prefix = f"sae_sweep_h{hidden_dim}_l1{safe_l1}"
+                candidate_metrics, _, candidate_t = run_sae_state_pipeline(
+                    acts,
+                    val_states,
+                    hmm.transition,
+                    seed=args.seed + hidden_dim + int(l1_coef * 1_000_000),
+                    hidden_dim=hidden_dim,
+                    l1_coef=l1_coef,
+                    epochs=args.sae_epochs,
+                    batch_size=max(args.batch_size, 512),
+                    max_samples=args.sae_max_samples,
+                    prefix=prefix,
+                )
+                row = compact_sae_row(candidate_metrics, prefix)
+                sweep_rows.append(row)
+                if best_row is None or row["rowwise_kl"] < best_row["rowwise_kl"]:
+                    best_row = row
+                    best_metrics = candidate_metrics
+                    best_t = candidate_t
+
+        if best_row is not None and best_metrics is not None and best_t is not None:
+            (out_dir / "sae_sweep_results.json").write_text(json.dumps(sweep_rows, indent=2))
+            metrics.update(
+                {
+                    "best_sae_hidden_dim": best_row["hidden_dim"],
+                    "best_sae_l1_coef": best_row["l1_coef"],
+                    "best_sae_epochs": best_row["epochs"],
+                    "best_sae_reconstruction_mse": best_row["reconstruction_mse"],
+                    "best_sae_active_fraction": best_row["active_fraction"],
+                    "best_sae_probe_state_recovery_accuracy": best_row["probe_state_recovery_accuracy"],
+                    "best_sae_cluster_state_recovery_accuracy": best_row["cluster_state_recovery_accuracy"],
+                    "best_sae_rowwise_kl": best_row["rowwise_kl"],
+                    "best_sae_frobenius_error": best_row["frobenius_error"],
+                    "best_sae_stationary_l1": best_row["stationary_l1"],
+                    "best_sae_spectral_error": best_row["spectral_error"],
+                    "best_sae_order1_gain_over_order0": best_row["order1_gain_over_order0"],
+                    "best_sae_order2_gain_over_order1": best_row["order2_gain_over_order1"],
+                }
+            )
+            np.save(out_dir / "best_sae_estimated_transition.npy", best_t)
+            save_matrix_heatmap(best_t, "Best SAE recovered transition", out_dir / "best_sae_estimated_transition.png")
+            save_matrix_heatmap(hmm.transition - best_t, "Best SAE transition difference", out_dir / "best_sae_transition_difference.png")
 
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     np.save(out_dir / "true_transition.npy", hmm.transition)
