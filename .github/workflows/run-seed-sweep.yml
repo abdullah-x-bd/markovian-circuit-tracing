@@ -1,0 +1,95 @@
+name: Run Seed Sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Comma-separated seeds"
+        required: true
+        default: "1,2,3,4,5"
+      epochs:
+        description: "Epochs per seed"
+        required: true
+        default: "8"
+      train_sequences:
+        description: "Training sequences per seed"
+        required: true
+        default: "8000"
+      val_sequences:
+        description: "Validation sequences per seed"
+        required: true
+        default: "2000"
+
+jobs:
+  seed-sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      MPLBACKEND: Agg
+      PIP_DISABLE_PIP_VERSION_CHECK: 1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy scipy scikit-learn matplotlib pyyaml tqdm pytest
+          pip install -e . --no-deps
+
+      - name: Run tests
+        run: |
+          python -m pytest -q
+
+      - name: Run seed sweep
+        shell: bash
+        run: |
+          IFS=',' read -ra SEEDS <<< "${{ github.event.inputs.seeds }}"
+          for SEED in "${SEEDS[@]}"; do
+            SEED=$(echo "$SEED" | xargs)
+            echo "Running seed $SEED"
+            python experiments/run_full_hmm_pipeline.py \
+              --output-dir runs/seed_sweep/seed_${SEED} \
+              --seed "$SEED" \
+              --epochs ${{ github.event.inputs.epochs }} \
+              --train-sequences ${{ github.event.inputs.train_sequences }} \
+              --val-sequences ${{ github.event.inputs.val_sequences }} \
+              --seq-len 64 \
+              --d-model 128 \
+              --n-layers 2 \
+              --n-heads 4 \
+              --d-mlp 256
+          done
+
+      - name: Aggregate seed sweep
+        run: |
+          python experiments/aggregate_seed_sweep.py \
+            --runs-dir runs/seed_sweep \
+            --output-dir runs/seed_sweep_summary
+
+      - name: Show seed sweep summary
+        if: always()
+        shell: bash
+        run: |
+          echo "# Markovian Circuit Tracing seed sweep" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f runs/seed_sweep_summary/seed_sweep_summary.md ]; then
+            cat runs/seed_sweep_summary/seed_sweep_summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Seed sweep summary was not produced. Check the logs above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload seed sweep artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mct-seed-sweep-results
+          path: runs/
+          if-no-files-found: warn
