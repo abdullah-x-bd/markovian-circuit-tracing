@@ -1,0 +1,116 @@
+name: Run TMLR Benchmark Suite
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "Benchmark preset"
+        required: true
+        default: "pilot"
+        type: choice
+        options:
+          - pilot
+          - full
+      families:
+        description: "Override comma-separated HMM families. Leave blank for preset."
+        required: false
+        default: ""
+      seeds:
+        description: "Override comma-separated seeds. Leave blank for preset."
+        required: false
+        default: ""
+
+jobs:
+  tmlr-benchmark-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MPLBACKEND: Agg
+      PIP_DISABLE_PIP_VERSION_CHECK: 1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy scipy scikit-learn matplotlib pyyaml tqdm pytest
+          pip install -e . --no-deps
+
+      - name: Run tests
+        run: |
+          python -m pytest -q
+
+      - name: Choose preset values
+        id: preset
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.preset }}" = "full" ]; then
+            echo "families=easy_separable,ambiguous_emissions,persistent,high_entropy,three_state,six_state" >> "$GITHUB_OUTPUT"
+            echo "seeds=1,2,3" >> "$GITHUB_OUTPUT"
+            echo "epochs=6" >> "$GITHUB_OUTPUT"
+            echo "train_sequences=6000" >> "$GITHUB_OUTPUT"
+            echo "val_sequences=1500" >> "$GITHUB_OUTPUT"
+          else
+            echo "families=easy_separable,ambiguous_emissions" >> "$GITHUB_OUTPUT"
+            echo "seeds=1" >> "$GITHUB_OUTPUT"
+            echo "epochs=2" >> "$GITHUB_OUTPUT"
+            echo "train_sequences=1200" >> "$GITHUB_OUTPUT"
+            echo "val_sequences=400" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply overrides
+        id: params
+        shell: bash
+        run: |
+          FAMILIES="${{ github.event.inputs.families }}"
+          SEEDS="${{ github.event.inputs.seeds }}"
+          if [ -z "$FAMILIES" ]; then FAMILIES="${{ steps.preset.outputs.families }}"; fi
+          if [ -z "$SEEDS" ]; then SEEDS="${{ steps.preset.outputs.seeds }}"; fi
+          echo "families=$FAMILIES" >> "$GITHUB_OUTPUT"
+          echo "seeds=$SEEDS" >> "$GITHUB_OUTPUT"
+
+      - name: Run benchmark suite
+        run: |
+          python experiments/run_tmlr_benchmark_suite.py \
+            --output-dir runs/tmlr_benchmark_${{ github.event.inputs.preset }} \
+            --families "${{ steps.params.outputs.families }}" \
+            --seeds "${{ steps.params.outputs.seeds }}" \
+            --epochs ${{ steps.preset.outputs.epochs }} \
+            --train-sequences ${{ steps.preset.outputs.train_sequences }} \
+            --val-sequences ${{ steps.preset.outputs.val_sequences }} \
+            --cluster-ks 2,3,4,5,6,8,10 \
+            --layers embed,resid_post_0,resid_post_1,ln_final
+
+      - name: Show benchmark summary
+        if: always()
+        shell: bash
+        run: |
+          echo "# TMLR Benchmark Suite" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Preset: ${{ github.event.inputs.preset }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Families: ${{ steps.params.outputs.families }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Seeds: ${{ steps.params.outputs.seeds }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f runs/tmlr_benchmark_${{ github.event.inputs.preset }}/summary_aggregate.csv ]; then
+            echo "Produced aggregate CSV files:" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            ls runs/tmlr_benchmark_${{ github.event.inputs.preset }}/*.csv >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Benchmark outputs were not produced. Check failed logs." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mct-tmlr-benchmark-${{ github.event.inputs.preset }}-results
+          path: runs/tmlr_benchmark_${{ github.event.inputs.preset }}/
+          if-no-files-found: warn
