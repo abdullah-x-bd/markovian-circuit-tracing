@@ -65,6 +65,7 @@ jobs:
             echo "n_layers=2" >> "$GITHUB_OUTPUT"
             echo "n_heads=4" >> "$GITHUB_OUTPUT"
             echo "d_mlp=256" >> "$GITHUB_OUTPUT"
+            echo "extra_flags=--run-sae --sae-hidden-dim 256 --sae-epochs 4 --sae-max-samples 50000" >> "$GITHUB_OUTPUT"
           else
             echo "epochs=2" >> "$GITHUB_OUTPUT"
             echo "train_sequences=1200" >> "$GITHUB_OUTPUT"
@@ -74,6 +75,7 @@ jobs:
             echo "n_layers=2" >> "$GITHUB_OUTPUT"
             echo "n_heads=4" >> "$GITHUB_OUTPUT"
             echo "d_mlp=192" >> "$GITHUB_OUTPUT"
+            echo "extra_flags=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Apply manual overrides
@@ -103,7 +105,8 @@ jobs:
             --d-model ${{ steps.preset.outputs.d_model }} \
             --n-layers ${{ steps.preset.outputs.n_layers }} \
             --n-heads ${{ steps.preset.outputs.n_heads }} \
-            --d-mlp ${{ steps.preset.outputs.d_mlp }}
+            --d-mlp ${{ steps.preset.outputs.d_mlp }} \
+            ${{ steps.preset.outputs.extra_flags }}
 
       - name: Show metrics in job summary
         if: always()
