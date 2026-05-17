@@ -50,9 +50,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sae-hidden-dim", type=int, default=256)
     parser.add_argument("--sae-epochs", type=int, default=5)
     parser.add_argument("--sae-l1-coef", type=float, default=1e-3)
+    parser.add_argument("--sae-top-k", type=int, default=0)
     parser.add_argument("--sae-max-samples", type=int, default=50000)
     parser.add_argument("--sae-sweep-hidden-dims", type=str, default="128,256,512")
     parser.add_argument("--sae-sweep-l1-coefs", type=str, default="0.003,0.01,0.03")
+    parser.add_argument("--sae-sweep-top-ks", type=str, default="0,8,16,32")
     return parser.parse_args()
 
 
@@ -132,6 +134,7 @@ def run_sae_state_pipeline(
     batch_size: int,
     max_samples: int,
     prefix: str,
+    top_k: int | None = None,
 ) -> tuple[dict[str, float], np.ndarray, np.ndarray]:
     sae, sae_result = train_sae(
         activations,
@@ -141,6 +144,7 @@ def run_sae_state_pipeline(
         batch_size=batch_size,
         max_samples=max_samples,
         seed=seed,
+        top_k=top_k,
     )
     sae_features = encode_activations(sae, activations)
     sae_metrics, sae_states, sae_t = state_pipeline_metrics(
@@ -155,6 +159,7 @@ def run_sae_state_pipeline(
             f"{prefix}_hidden_dim": hidden_dim,
             f"{prefix}_epochs": epochs,
             f"{prefix}_l1_coef": l1_coef,
+            f"{prefix}_top_k": 0 if top_k is None else top_k,
             f"{prefix}_reconstruction_mse": sae_result.reconstruction_mse,
             f"{prefix}_mean_l1": sae_result.mean_l1,
             f"{prefix}_active_fraction": sae_result.active_fraction,
@@ -168,6 +173,7 @@ def compact_sae_row(metrics: dict[str, float], prefix: str) -> dict[str, float]:
         "hidden_dim",
         "epochs",
         "l1_coef",
+        "top_k",
         "reconstruction_mse",
         "mean_l1",
         "active_fraction",
@@ -302,6 +308,7 @@ def main() -> None:
     }
 
     if args.run_sae:
+        top_k = None if args.sae_top_k <= 0 else args.sae_top_k
         sae_metrics, _, sae_t = run_sae_state_pipeline(
             acts,
             val_states,
@@ -313,6 +320,7 @@ def main() -> None:
             batch_size=max(args.batch_size, 512),
             max_samples=args.sae_max_samples,
             prefix="sae",
+            top_k=top_k,
         )
         metrics.update(sae_metrics)
         np.save(out_dir / "sae_estimated_transition.npy", sae_t)
@@ -326,29 +334,33 @@ def main() -> None:
         best_t = None
         hidden_dims = parse_int_list(args.sae_sweep_hidden_dims)
         l1_coefs = parse_float_list(args.sae_sweep_l1_coefs)
+        top_ks = parse_int_list(args.sae_sweep_top_ks)
 
         for hidden_dim in hidden_dims:
             for l1_coef in l1_coefs:
-                safe_l1 = str(l1_coef).replace(".", "p").replace("-", "m")
-                prefix = f"sae_sweep_h{hidden_dim}_l1{safe_l1}"
-                candidate_metrics, _, candidate_t = run_sae_state_pipeline(
-                    acts,
-                    val_states,
-                    hmm.transition,
-                    seed=args.seed + hidden_dim + int(l1_coef * 1_000_000),
-                    hidden_dim=hidden_dim,
-                    l1_coef=l1_coef,
-                    epochs=args.sae_epochs,
-                    batch_size=max(args.batch_size, 512),
-                    max_samples=args.sae_max_samples,
-                    prefix=prefix,
-                )
-                row = compact_sae_row(candidate_metrics, prefix)
-                sweep_rows.append(row)
-                if best_row is None or row["rowwise_kl"] < best_row["rowwise_kl"]:
-                    best_row = row
-                    best_metrics = candidate_metrics
-                    best_t = candidate_t
+                for top_k_value in top_ks:
+                    top_k = None if top_k_value <= 0 else top_k_value
+                    safe_l1 = str(l1_coef).replace(".", "p").replace("-", "m")
+                    prefix = f"sae_sweep_h{hidden_dim}_l1{safe_l1}_k{top_k_value}"
+                    candidate_metrics, _, candidate_t = run_sae_state_pipeline(
+                        acts,
+                        val_states,
+                        hmm.transition,
+                        seed=args.seed + hidden_dim + int(l1_coef * 1_000_000) + top_k_value,
+                        hidden_dim=hidden_dim,
+                        l1_coef=l1_coef,
+                        epochs=args.sae_epochs,
+                        batch_size=max(args.batch_size, 512),
+                        max_samples=args.sae_max_samples,
+                        prefix=prefix,
+                        top_k=top_k,
+                    )
+                    row = compact_sae_row(candidate_metrics, prefix)
+                    sweep_rows.append(row)
+                    if best_row is None or row["rowwise_kl"] < best_row["rowwise_kl"]:
+                        best_row = row
+                        best_metrics = candidate_metrics
+                        best_t = candidate_t
 
         if best_row is not None and best_metrics is not None and best_t is not None:
             (out_dir / "sae_sweep_results.json").write_text(json.dumps(sweep_rows, indent=2))
@@ -356,6 +368,7 @@ def main() -> None:
                 {
                     "best_sae_hidden_dim": best_row["hidden_dim"],
                     "best_sae_l1_coef": best_row["l1_coef"],
+                    "best_sae_top_k": best_row["top_k"],
                     "best_sae_epochs": best_row["epochs"],
                     "best_sae_reconstruction_mse": best_row["reconstruction_mse"],
                     "best_sae_active_fraction": best_row["active_fraction"],
