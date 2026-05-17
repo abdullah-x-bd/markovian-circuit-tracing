@@ -1,0 +1,82 @@
+name: Make Paper Tables
+
+on:
+  workflow_dispatch:
+    inputs:
+      benchmark_artifact_note:
+        description: "Upload/download benchmark artifact manually into runs/ before local use. This workflow runs a pilot table check."
+        required: false
+        default: "pilot"
+
+jobs:
+  paper-tables-pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      MPLBACKEND: Agg
+      PIP_DISABLE_PIP_VERSION_CHECK: 1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy scipy scikit-learn matplotlib pyyaml tqdm pytest
+          pip install -e . --no-deps
+
+      - name: Run benchmark pilot
+        run: |
+          python experiments/run_tmlr_benchmark_suite.py \
+            --output-dir runs/tmlr_benchmark_pilot \
+            --families easy_separable,ambiguous_emissions \
+            --seeds 1 \
+            --epochs 2 \
+            --train-sequences 1200 \
+            --val-sequences 400 \
+            --cluster-ks 2,3,4,5,6,8,10 \
+            --layers embed,resid_post_0,resid_post_1,ln_final
+
+      - name: Run forcing-control pilot
+        run: |
+          python experiments/run_state_forcing_controls.py \
+            --output-dir runs/state_forcing_pilot \
+            --families easy_separable,ambiguous_emissions \
+            --seeds 1 \
+            --epochs 2 \
+            --train-sequences 1200 \
+            --val-sequences 400
+
+      - name: Make paper tables
+        run: |
+          python experiments/make_paper_tables.py \
+            --benchmark-dir runs/tmlr_benchmark_pilot \
+            --forcing-dir runs/state_forcing_pilot \
+            --output-dir runs/paper_tables_pilot
+
+      - name: Show paper tables
+        if: always()
+        shell: bash
+        run: |
+          echo "# Paper Tables Pilot" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f runs/paper_tables_pilot/paper_tables.md ]; then
+            cat runs/paper_tables_pilot/paper_tables.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Paper tables were not produced. Check failed logs." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload paper-table artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mct-paper-tables-pilot
+          path: runs/
+          if-no-files-found: warn
