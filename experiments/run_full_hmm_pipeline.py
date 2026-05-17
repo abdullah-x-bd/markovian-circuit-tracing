@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from mct.data import (
+    bayes_filter,
     bayes_predictive_distribution,
     default_hmm,
     forced_state_next_token_distribution,
@@ -19,6 +20,8 @@ from mct.data import (
 from mct.interventions import state_forcing_kl
 from mct.model import TinyTransformer, TransformerConfig, count_parameters
 from mct.plots import save_loss_curve, save_matrix_heatmap
+from mct.probes import belief_probe_metrics
+from mct.sae import encode_activations, train_sae
 from mct.states import best_label_match, cluster_internal_states, probe_state_recovery, state_centroids
 from mct.train import collect_activations, evaluate_loss, train_model
 from mct.transition import estimate_transition_matrix, markov_order_accuracy, transition_report
@@ -42,6 +45,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--forcing-position", type=int, default=20)
     parser.add_argument("--forcing-samples", type=int, default=512)
     parser.add_argument("--num-threads", type=int, default=2)
+    parser.add_argument("--run-sae", action="store_true")
+    parser.add_argument("--sae-hidden-dim", type=int, default=256)
+    parser.add_argument("--sae-epochs", type=int, default=5)
+    parser.add_argument("--sae-l1-coef", type=float, default=1e-3)
+    parser.add_argument("--sae-max-samples", type=int, default=50000)
     return parser.parse_args()
 
 
@@ -75,6 +83,31 @@ def random_state_baseline(true_transition: np.ndarray, states: np.ndarray, seed:
 def true_state_sanity_check(true_transition: np.ndarray, states: np.ndarray) -> dict[str, float]:
     true_empirical_t = estimate_transition_matrix(states, n_states=true_transition.shape[0])
     return {f"true_state_empirical_{k}": v for k, v in transition_report(true_transition, true_empirical_t).items()}
+
+
+def prefixed(prefix: str, values: dict[str, float]) -> dict[str, float]:
+    return {f"{prefix}_{key}": value for key, value in values.items()}
+
+
+def state_pipeline_metrics(
+    representation: np.ndarray,
+    true_states: np.ndarray,
+    true_transition: np.ndarray,
+    seed: int,
+    prefix: str,
+) -> tuple[dict[str, float], np.ndarray, np.ndarray]:
+    probe_acc = probe_state_recovery(representation, true_states, seed=seed)
+    discovered = cluster_internal_states(representation, n_states=true_transition.shape[0], seed=seed)
+    remapped, cluster_acc = best_label_match(discovered, true_states, n_states=true_transition.shape[0])
+    estimated_t = estimate_transition_matrix(remapped, n_states=true_transition.shape[0])
+
+    metrics = {
+        f"{prefix}_probe_state_recovery_accuracy": probe_acc,
+        f"{prefix}_cluster_state_recovery_accuracy": cluster_acc,
+        **prefixed(prefix, transition_report(true_transition, estimated_t)),
+        **prefixed(prefix, markov_order_accuracy(remapped, n_states=true_transition.shape[0])),
+    }
+    return metrics, remapped, estimated_t
 
 
 def main() -> None:
@@ -128,19 +161,24 @@ def main() -> None:
         lr=args.lr,
     )
 
+    final_val_loss = evaluate_loss(model, val_x, val_y, batch_size=args.batch_size)
     acts = collect_activations(
         model,
         val_x,
         activation_name=args.activation_name,
         batch_size=args.batch_size,
     ).numpy()
-    probe_acc = probe_state_recovery(acts, val_states, seed=args.seed)
 
-    discovered = cluster_internal_states(acts, n_states=hmm.n_states, seed=args.seed)
-    remapped, cluster_acc = best_label_match(discovered, val_states, n_states=hmm.n_states)
-    estimated_t = estimate_transition_matrix(remapped, n_states=hmm.n_states)
-    transition_metrics = transition_report(hmm.transition, estimated_t)
-    markov_metrics = markov_order_accuracy(remapped, n_states=hmm.n_states)
+    residual_metrics, residual_states, residual_t = state_pipeline_metrics(
+        acts,
+        val_states,
+        hmm.transition,
+        args.seed,
+        prefix="residual",
+    )
+
+    beliefs = bayes_filter(hmm, val_tokens)
+    belief_metrics = belief_probe_metrics(acts, beliefs, val_states, seed=args.seed)
 
     bayes_probs = bayes_predictive_distribution(hmm, val_tokens)
     bayes_loss = sequence_cross_entropy(val_tokens, bayes_probs)
@@ -148,7 +186,7 @@ def main() -> None:
     unigram_probs = unigram_distribution(train_tokens, vocab_size=hmm.vocab_size)
     unigram_loss = repeated_distribution_loss(val_tokens, unigram_probs)
 
-    centroids = state_centroids(acts, remapped, n_states=hmm.n_states)
+    centroids = state_centroids(acts, residual_states, n_states=hmm.n_states)
     ideal_visible_forced = np.stack(
         [forced_state_next_token_distribution(hmm, s) for s in range(hmm.n_states)],
         axis=0,
@@ -174,27 +212,58 @@ def main() -> None:
         "epochs": args.epochs,
         "parameter_count": count_parameters(model),
         "final_train_loss": result.train_loss[-1],
-        "final_val_loss": evaluate_loss(model, val_x, val_y, batch_size=args.batch_size),
+        "final_val_loss": final_val_loss,
         "bayes_optimal_loss": bayes_loss,
         "uniform_baseline_loss": uniform_loss,
         "unigram_baseline_loss": unigram_loss,
-        "model_excess_loss_over_bayes": evaluate_loss(model, val_x, val_y, batch_size=args.batch_size) - bayes_loss,
-        "probe_state_recovery_accuracy": probe_acc,
-        "cluster_state_recovery_accuracy": cluster_acc,
-        **transition_metrics,
+        "model_excess_loss_over_bayes": final_val_loss - bayes_loss,
+        **belief_metrics,
+        **residual_metrics,
         **true_state_sanity_check(hmm.transition, val_states),
-        **shuffled_state_baseline(hmm.transition, remapped, args.seed + 101),
-        **random_state_baseline(hmm.transition, remapped, args.seed + 202),
-        **markov_metrics,
+        **shuffled_state_baseline(hmm.transition, residual_states, args.seed + 101),
+        **random_state_baseline(hmm.transition, residual_states, args.seed + 202),
         **forced_kl,
     }
 
+    if args.run_sae:
+        sae, sae_result = train_sae(
+            acts,
+            hidden_dim=args.sae_hidden_dim,
+            l1_coef=args.sae_l1_coef,
+            epochs=args.sae_epochs,
+            batch_size=max(args.batch_size, 512),
+            max_samples=args.sae_max_samples,
+            seed=args.seed,
+        )
+        sae_features = encode_activations(sae, acts)
+        sae_metrics, sae_states, sae_t = state_pipeline_metrics(
+            sae_features,
+            val_states,
+            hmm.transition,
+            args.seed,
+            prefix="sae",
+        )
+        metrics.update(
+            {
+                "sae_hidden_dim": args.sae_hidden_dim,
+                "sae_epochs": args.sae_epochs,
+                "sae_l1_coef": args.sae_l1_coef,
+                "sae_reconstruction_mse": sae_result.reconstruction_mse,
+                "sae_mean_l1": sae_result.mean_l1,
+                "sae_active_fraction": sae_result.active_fraction,
+                **sae_metrics,
+            }
+        )
+        np.save(out_dir / "sae_estimated_transition.npy", sae_t)
+        save_matrix_heatmap(sae_t, "SAE recovered transition", out_dir / "sae_estimated_transition.png")
+        save_matrix_heatmap(hmm.transition - sae_t, "SAE transition difference", out_dir / "sae_transition_difference.png")
+
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     np.save(out_dir / "true_transition.npy", hmm.transition)
-    np.save(out_dir / "estimated_transition.npy", estimated_t)
+    np.save(out_dir / "estimated_transition.npy", residual_t)
     save_matrix_heatmap(hmm.transition, "True HMM transition", out_dir / "true_transition.png")
-    save_matrix_heatmap(estimated_t, "Recovered internal transition", out_dir / "estimated_transition.png")
-    save_matrix_heatmap(hmm.transition - estimated_t, "Transition difference", out_dir / "transition_difference.png")
+    save_matrix_heatmap(residual_t, "Residual recovered transition", out_dir / "estimated_transition.png")
+    save_matrix_heatmap(hmm.transition - residual_t, "Residual transition difference", out_dir / "transition_difference.png")
     save_loss_curve(result.train_loss, result.val_loss, out_dir / "loss_curve.png")
 
     print(json.dumps(metrics, indent=2))
