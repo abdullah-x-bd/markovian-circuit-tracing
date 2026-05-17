@@ -65,7 +65,7 @@ jobs:
             echo "n_layers=2" >> "$GITHUB_OUTPUT"
             echo "n_heads=4" >> "$GITHUB_OUTPUT"
             echo "d_mlp=256" >> "$GITHUB_OUTPUT"
-            echo "extra_flags=--run-sae-sweep --sae-epochs 4 --sae-max-samples 50000 --sae-sweep-hidden-dims 128,256,512 --sae-sweep-l1-coefs 0.003,0.01,0.03" >> "$GITHUB_OUTPUT"
+            echo "extra_flags=--run-sae-sweep --sae-epochs 4 --sae-max-samples 50000 --sae-sweep-hidden-dims 128,256,512 --sae-sweep-l1-coefs 0.003,0.01 --sae-sweep-top-ks 0,8,16,32" >> "$GITHUB_OUTPUT"
           else
             echo "epochs=2" >> "$GITHUB_OUTPUT"
             echo "train_sequences=1200" >> "$GITHUB_OUTPUT"
