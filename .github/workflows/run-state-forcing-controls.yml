@@ -1,0 +1,112 @@
+name: Run State Forcing Controls
+
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "Forcing-control preset"
+        required: true
+        default: "pilot"
+        type: choice
+        options:
+          - pilot
+          - full
+      families:
+        description: "Override comma-separated HMM families. Leave blank for preset."
+        required: false
+        default: ""
+      seeds:
+        description: "Override comma-separated seeds. Leave blank for preset."
+        required: false
+        default: ""
+
+jobs:
+  forcing-controls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MPLBACKEND: Agg
+      PIP_DISABLE_PIP_VERSION_CHECK: 1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy scipy scikit-learn matplotlib pyyaml tqdm pytest
+          pip install -e . --no-deps
+
+      - name: Run tests
+        run: |
+          python -m pytest -q
+
+      - name: Choose preset values
+        id: preset
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.preset }}" = "full" ]; then
+            echo "families=easy_separable,ambiguous_emissions,persistent,high_entropy,three_state,six_state" >> "$GITHUB_OUTPUT"
+            echo "seeds=1,2,3" >> "$GITHUB_OUTPUT"
+            echo "epochs=6" >> "$GITHUB_OUTPUT"
+            echo "train_sequences=6000" >> "$GITHUB_OUTPUT"
+            echo "val_sequences=1500" >> "$GITHUB_OUTPUT"
+          else
+            echo "families=easy_separable,ambiguous_emissions" >> "$GITHUB_OUTPUT"
+            echo "seeds=1" >> "$GITHUB_OUTPUT"
+            echo "epochs=2" >> "$GITHUB_OUTPUT"
+            echo "train_sequences=1200" >> "$GITHUB_OUTPUT"
+            echo "val_sequences=400" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply overrides
+        id: params
+        shell: bash
+        run: |
+          FAMILIES="${{ github.event.inputs.families }}"
+          SEEDS="${{ github.event.inputs.seeds }}"
+          if [ -z "$FAMILIES" ]; then FAMILIES="${{ steps.preset.outputs.families }}"; fi
+          if [ -z "$SEEDS" ]; then SEEDS="${{ steps.preset.outputs.seeds }}"; fi
+          echo "families=$FAMILIES" >> "$GITHUB_OUTPUT"
+          echo "seeds=$SEEDS" >> "$GITHUB_OUTPUT"
+
+      - name: Run state-forcing controls
+        run: |
+          python experiments/run_state_forcing_controls.py \
+            --output-dir runs/state_forcing_${{ github.event.inputs.preset }} \
+            --families "${{ steps.params.outputs.families }}" \
+            --seeds "${{ steps.params.outputs.seeds }}" \
+            --epochs ${{ steps.preset.outputs.epochs }} \
+            --train-sequences ${{ steps.preset.outputs.train_sequences }} \
+            --val-sequences ${{ steps.preset.outputs.val_sequences }}
+
+      - name: Show forcing summary
+        if: always()
+        shell: bash
+        run: |
+          echo "# State Forcing Controls" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Preset: ${{ github.event.inputs.preset }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Families: ${{ steps.params.outputs.families }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Seeds: ${{ steps.params.outputs.seeds }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f runs/state_forcing_${{ github.event.inputs.preset }}/forcing_aggregate_overall.csv ]; then
+            echo "Produced forcing-control aggregate files." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Forcing outputs were not produced. Check failed logs." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload forcing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mct-state-forcing-${{ github.event.inputs.preset }}-results
+          path: runs/state_forcing_${{ github.event.inputs.preset }}/
+          if-no-files-found: warn
