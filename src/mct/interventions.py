@@ -13,9 +13,10 @@ def kl_divergence_torch(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-9) -> 
 
 
 def _distribution_kl_for_logits(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Return KL(target || model) for the categorical output distribution."""
     pred = F.softmax(logits, dim=-1)
     expanded = target.unsqueeze(0).expand_as(pred)
-    return kl_divergence_torch(pred, expanded)
+    return kl_divergence_torch(expanded, pred)
 
 
 def _run_patch_kl(
