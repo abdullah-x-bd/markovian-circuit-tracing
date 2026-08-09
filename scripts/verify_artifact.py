@@ -8,7 +8,8 @@ from pathlib import Path
 EXPECTED_SEEDS = (7, 17, 29, 43, 71)
 EXPECTED_OBS = ("easy", "medium", "hard")
 REQUIRED_AGGREGATES = (
-    "raw_runs.json", "summary.json", "claims.json",
+    "raw_runs.json", "raw/easy.json", "raw/medium.json", "raw/hard.json",
+    "summary.json", "claims.json",
     "tables/run_metrics.csv", "tables/summary_by_observability.csv",
     "tables/forcing_controls.csv", "tables/forcing_summary.csv",
     "figures/figure_1_main.svg", "figures/figure_2_belief_recovery.svg",
@@ -32,18 +33,32 @@ def main() -> None:
     for name in REQUIRED_AGGREGATES:
         if not (args.root / name).exists():
             errors.append(f"missing {name}")
-    raw_path = args.root / "raw_runs.json"
-    if raw_path.exists():
-        raw = json.loads(raw_path.read_text())
-        runs = raw.get("runs", {})
-        expected = {f"{o}_seed{s:02d}" for o in EXPECTED_OBS for s in EXPECTED_SEEDS}
-        if set(runs) != expected:
-            errors.append(f"raw run grid mismatch: missing={sorted(expected-set(runs))}, extra={sorted(set(runs)-expected)}")
-        for name, payload in runs.items():
-            if payload.get("metrics", {}).get("artifact_schema_version") != "1.0":
-                errors.append(f"bad schema in raw run {name}")
+
+    expected = {f"{o}_seed{s:02d}" for o in EXPECTED_OBS for s in EXPECTED_SEEDS}
+    found = set()
+    index_path = args.root / "raw_runs.json"
+    if index_path.exists():
+        index = json.loads(index_path.read_text())
+        if index.get("artifact_schema_version") != "1.0":
+            errors.append("bad raw evidence index schema")
+        for _, rel in index.get("files", {}).items():
+            pth = args.root / rel
+            if not pth.exists():
+                errors.append(f"missing indexed raw evidence {rel}")
+                continue
+            raw = json.loads(pth.read_text())
+            if raw.get("artifact_schema_version") != "1.0":
+                errors.append(f"bad schema in {rel}")
+            for name, payload in raw.get("runs", {}).items():
+                found.add(name)
+                if payload.get("metrics", {}).get("artifact_schema_version") != "1.0":
+                    errors.append(f"bad metric schema in raw run {name}")
+    if found != expected:
+        errors.append(f"raw run grid mismatch: missing={sorted(expected-found)}, extra={sorted(found-expected)}")
+
     if errors:
         raise SystemExit("Artifact verification failed:\n" + "\n".join(errors))
+
     manifest = {}
     for path in sorted(p for p in args.root.rglob("*") if p.is_file() and p.name != "MANIFEST.json" and "runs" not in p.parts):
         manifest[str(path.relative_to(args.root))] = {"sha256": sha256(path), "bytes": path.stat().st_size}
