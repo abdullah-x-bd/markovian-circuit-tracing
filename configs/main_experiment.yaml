@@ -1,0 +1,31 @@
+artifact_version: 1
+run_kind: confirmatory
+hmm_observability: medium
+seeds: [7, 17, 29, 43, 71]
+sequence_split:
+  calibration: 0.60
+  selection: 0.20
+  evaluation: 0.20
+model:
+  d_model: 128
+  n_layers: 2
+  n_heads: 4
+  d_mlp: 256
+training:
+  epochs: 8
+  batch_size: 256
+  learning_rate: 0.0003
+  train_sequences: 8000
+  model_val_sequences: 1000
+  analysis_sequences: 3000
+  seq_len: 64
+representation:
+  activation_name: resid_post_1
+interventions:
+  forcing_position: 20
+  forcing_samples: 512
+  scrubbing_pairs: 256
+baselines:
+  token_histories: [1, 2, 4]
+  untrained_transformer: true
+observability_sweep: [easy, medium, hard]
