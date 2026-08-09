@@ -1,0 +1,52 @@
+name: Canonical benchmark
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "configs/main_experiment.yaml"
+      - "src/**"
+      - "experiments/**"
+      - "scripts/run_benchmark_suite.py"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        observability: [easy, medium, hard]
+        seed: [7, 17, 29, 43, 71]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+      - name: Run frozen canonical cell
+        run: >-
+          python scripts/run_benchmark_suite.py
+          --only-observability ${{ matrix.observability }}
+          --only-seed ${{ matrix.seed }}
+          --force
+      - name: Validate cell
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          obs='${{ matrix.observability }}'; seed=int('${{ matrix.seed }}')
+          p=Path(f'results/v1/runs/{obs}_seed{seed:02d}/metrics.json')
+          m=json.loads(p.read_text())
+          assert m['artifact_schema_version']=='1.0'
+          assert m['model_quality']['stopping_target_reached']
+          PY
+      - name: Upload canonical cell
+        uses: actions/upload-artifact@v4
+        with:
+          name: mct-${{ matrix.observability }}-seed${{ matrix.seed }}
+          path: results/v1/runs/${{ matrix.observability }}_seed*/
