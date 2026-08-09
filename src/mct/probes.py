@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.linear_model import Ridge, RidgeClassifier
 from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
 
 
@@ -48,7 +48,6 @@ def belief_probe_metrics(
     evaluation_true_states: np.ndarray | None = None,
     alpha: float = 1.0,
 ) -> dict[str, float]:
-    """Fit on calibration sequences and score only on held-out evaluation sequences."""
     x_cal = _flatten(calibration_activations)
     y_cal = _flatten(calibration_beliefs)
     x_eval = _flatten(evaluation_activations)
@@ -76,12 +75,11 @@ def state_probe_metrics(
     evaluation_activations: np.ndarray,
     evaluation_states: np.ndarray,
 ) -> dict[str, float]:
-    clf = LogisticRegression(max_iter=1000, solver="lbfgs")
+    clf = RidgeClassifier(alpha=1.0)
     clf.fit(_flatten(calibration_activations), _flatten_labels(calibration_states))
     pred = clf.predict(_flatten(evaluation_activations))
     return {"state_probe_accuracy": float(accuracy_score(_flatten_labels(evaluation_states), pred))}
 
 
 def bayes_state_classification_ceiling(predictive_beliefs: np.ndarray, true_states: np.ndarray) -> float:
-    """Best sampled-state classification available from observations x_<t alone."""
     return float((predictive_beliefs.argmax(axis=-1) == true_states).mean())
