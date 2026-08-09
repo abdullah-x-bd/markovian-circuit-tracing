@@ -98,7 +98,7 @@ The verifier requires all 15 canonical cells and regenerates `results/v1/MANIFES
 
 The committed evidence lives under [`results/v1/`](results/v1/):
 
-* `raw_runs.json` contains the metrics, forcing controls, run configuration, environment, and training history for every canonical cell.
+* `raw_runs.json` is a compact 15-cell run index with extracted per-run metrics. Full per-control intervention rows are in `tables/forcing_controls.csv`; complete generated run directories are reproducible from the frozen configuration.
 * `summary.json` contains aggregate statistics.
 * `claims.json` records the claim-status analysis and paired cross-seed tests.
 * `tables/` contains per-run and aggregate CSVs.
