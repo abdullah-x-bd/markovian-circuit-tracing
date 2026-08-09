@@ -49,13 +49,11 @@ Every run writes:
 
 ## Committed evidence
 
-`results/v1/raw_runs.json` combines the text-based run evidence for all 15 canonical cells. Aggregate CSVs, figures, claim tests, and representative matrices are also committed.
-
-The generated run directories can be reconstructed from the frozen config and are validated by `scripts/verify_artifact.py`.
+`results/v1/raw_runs.json` contains the compact 15-cell run index and extracted per-run metrics. Aggregate CSVs, all forcing-control rows, figures, claim tests, and representative matrices are also committed. Full generated run directories are reconstructed from the frozen configuration.
 
 ## Integrity
 
-The verifier checks the canonical run grid, required files, metadata consistency, schema version, aggregate outputs, and figures. It then writes SHA-256 hashes to `results/v1/MANIFEST.json`.
+The verifier checks the canonical run grid, required aggregate files, schema version, and canonical figures. It then writes SHA-256 hashes to `results/v1/MANIFEST.json`.
 
 ## CI
 
