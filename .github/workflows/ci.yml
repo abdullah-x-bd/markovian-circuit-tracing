@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[dev]'
+      - name: Compile
+        run: python -m compileall -q src tests experiments scripts
+      - name: Test
+        run: pytest -q
+      - name: End-to-end smoke artifact
+        run: |
+          python experiments/run_full_hmm_pipeline.py \
+            --output-dir /tmp/mct-smoke \
+            --seq-len 12 --train-sequences 120 --model-val-sequences 40 \
+            --analysis-sequences 60 --epochs 1 --min-epochs 1 --bayes-gap-target 10 \
+            --batch-size 32 --d-model 16 --n-layers 1 --n-heads 2 --d-mlp 32 \
+            --activation-name resid_post_0 --forcing-position 4 \
+            --forcing-samples 8 --scrubbing-pairs 8 --num-threads 1
+      - name: Validate smoke schema
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m = json.loads(Path('/tmp/mct-smoke/metrics.json').read_text())
+          assert m['artifact_schema_version'] == '1.0'
+          assert Path('/tmp/mct-smoke/environment.json').exists()
+          assert Path('/tmp/mct-smoke/training_history.json').exists()
+          PY

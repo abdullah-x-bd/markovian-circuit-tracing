@@ -1,0 +1,24 @@
+{
+  "artifact_schema_version": "1.0",
+  "canonical_run_count": 15,
+  "canonical_grid": {
+    "observability": ["easy", "medium", "hard"],
+    "seeds": [7, 17, 29, 43, 71]
+  },
+  "committed_evidence": [
+    "raw_runs.json",
+    "suite_manifest.json",
+    "summary.json",
+    "claims.json",
+    "tables/run_metrics.csv",
+    "tables/summary_by_observability.csv",
+    "tables/forcing_controls.csv",
+    "tables/forcing_summary.csv",
+    "tables/true_transition.csv",
+    "tables/medium_seed07_recovered_transition.csv",
+    "figures/figure_1_main.svg",
+    "figures/figure_2_belief_recovery.svg",
+    "figures/figure_3_sae_comparison.svg"
+  ],
+  "integrity": "Run python scripts/verify_artifact.py after reproducing or modifying the artifact. The verifier checks the 15-cell grid and regenerates SHA-256 checksums for the local evidence state."
+}
