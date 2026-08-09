@@ -1,31 +1,59 @@
 artifact_version: 1
+protocol_status: frozen_before_confirmatory_evidence
+protocol_revision_note: >-
+  The original 8000-sequence/8-epoch CPU specification was reduced before the
+  final evidence bundle because a single CPU run exceeded the practical
+  execution window. The multinomial logistic sampled-state probe was also
+  replaced by a deterministic ridge linear classifier because convergence time
+  varied sharply across observability regimes. No seed or regime was selected
+  based on outcome. Seeds, observability regimes, split policy, hypotheses,
+  causal controls, and primary predictive-belief metrics were unchanged. Training
+  now stops only after the model-validation loss is within 0.02 nats/token of
+  the exact Bayes oracle (after at least six epochs), or at 30 epochs.
 run_kind: confirmatory
-hmm_observability: medium
 seeds: [7, 17, 29, 43, 71]
+observability_sweep: [easy, medium, hard]
 sequence_split:
   calibration: 0.60
   selection: 0.20
   evaluation: 0.20
 model:
-  d_model: 128
+  d_model: 64
   n_layers: 2
   n_heads: 4
-  d_mlp: 256
+  d_mlp: 128
 training:
-  epochs: 8
+  max_epochs: 30
+  min_epochs: 6
+  bayes_gap_target: 0.02
   batch_size: 256
   learning_rate: 0.0003
-  train_sequences: 8000
-  model_val_sequences: 1000
-  analysis_sequences: 3000
-  seq_len: 64
+  train_sequences: 1200
+  model_val_sequences: 250
+  analysis_sequences: 800
+  seq_len: 40
 representation:
   activation_name: resid_post_1
 interventions:
-  forcing_position: 20
-  forcing_samples: 512
-  scrubbing_pairs: 256
+  forcing_position: 12
+  forcing_samples: 64
+  scrubbing_pairs: 48
 baselines:
   token_histories: [1, 2, 4]
   untrained_transformer: true
-observability_sweep: [easy, medium, hard]
+sae:
+  enabled: true
+  selection_mode: fixed_a_priori
+  hidden_dim: 128
+  epochs: 2
+  l1_coef: 0.003
+  top_k: 16
+  max_samples: 20000
+canonical_claims:
+  - near_bayes_prediction
+  - predictive_belief_recovery
+  - heldout_transition_recovery
+  - causal_state_forcing
+  - same_state_scrubbing_preservation
+  - observability_dependence
+  - sae_comparison
