@@ -4,28 +4,39 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "markovian-circuit-tracing"
-version = "0.1.0"
-description = "Mechanistic interpretability experiments for recovering Markovian state transitions from transformer activations"
+version = "0.2.0"
+description = "Controlled mechanistic interpretability benchmark for recovering predictive Markov state structure from transformer activations"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Abdullah X"}]
+keywords = ["mechanistic interpretability", "transformers", "hidden Markov models", "causal interventions", "AI safety"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
-    "torch>=2.2",
-    "numpy>=1.26",
-    "scipy>=1.11",
-    "scikit-learn>=1.4",
-    "matplotlib>=3.8",
-    "pyyaml>=6.0",
-    "tqdm>=4.66",
+  "torch>=2.2,<3",
+  "numpy>=1.26,<3",
+  "scipy>=1.11,<2",
+  "scikit-learn>=1.4,<2",
+  "matplotlib>=3.8,<4",
+  "pyyaml>=6.0,<7",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "ruff>=0.4",
-]
+dev = ["pytest>=8.0,<9", "ruff>=0.4,<1", "coverage>=7,<8"]
+
+[project.urls]
+Repository = "https://github.com/abdullah-x-bd/markovian-circuit-tracing"
+Issues = "https://github.com/abdullah-x-bd/markovian-circuit-tracing/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.ruff]
-line-length = 100
+line-length = 110
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
