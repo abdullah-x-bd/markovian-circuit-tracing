@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+import sklearn
 
 from mct.data import (
     bayes_predictive_distribution,
@@ -38,7 +41,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-val-sequences", type=int, default=1000)
     p.add_argument("--analysis-sequences", type=int, default=3000)
     p.add_argument("--val-sequences", type=int, default=None, help="Deprecated alias for --analysis-sequences")
-    p.add_argument("--epochs", type=int, default=8)
+    p.add_argument("--epochs", type=int, default=30, help="Maximum training epochs")
+    p.add_argument("--min-epochs", type=int, default=6)
+    p.add_argument("--bayes-gap-target", type=float, default=0.02)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--d-model", type=int, default=128)
@@ -136,6 +141,10 @@ def main() -> None:
     )
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = TinyTransformer(cfg).to(device)
+    model_val_bayes_loss = sequence_cross_entropy(
+        model_val_tokens, bayes_predictive_distribution(hmm, model_val_tokens)
+    )
+    target_val_loss = model_val_bayes_loss + args.bayes_gap_target
     training = train_model(
         model,
         train_x,
@@ -145,6 +154,8 @@ def main() -> None:
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
+        min_epochs=args.min_epochs,
+        target_val_loss=target_val_loss,
     )
 
     split = split_sequence_indices(args.analysis_sequences, seed=args.seed + 3)
@@ -239,6 +250,7 @@ def main() -> None:
     unigram = unigram_distribution(train_tokens, hmm.vocab_size)
     true_empirical_report = transition_report(hmm.transition, true_empirical_t)
     metrics = {
+        "artifact_schema_version": "1.0",
         "run_metadata": {
             "run_kind": args.run_kind,
             "hmm_observability": args.hmm_observability,
@@ -258,6 +270,13 @@ def main() -> None:
         "model_quality": {
             "final_train_loss": training.train_loss[-1],
             "final_model_validation_loss": training.val_loss[-1],
+            "bayes_optimal_model_validation_loss": model_val_bayes_loss,
+            "model_validation_excess_over_bayes": training.val_loss[-1] - model_val_bayes_loss,
+            "actual_training_epochs": len(training.train_loss),
+            "maximum_training_epochs": args.epochs,
+            "minimum_training_epochs": args.min_epochs,
+            "bayes_gap_target": args.bayes_gap_target,
+            "stopping_target_reached": bool(training.val_loss[-1] <= target_val_loss),
             "untouched_evaluation_loss": eval_loss,
             "bayes_optimal_evaluation_loss": bayes_loss,
             "model_excess_loss_over_bayes": eval_loss - bayes_loss,
@@ -288,6 +307,15 @@ def main() -> None:
         },
     }
     (out_dir / "config.json").write_text(json.dumps(vars(args), indent=2))
+    environment = {
+        "python": sys.version,
+        "platform": platform.platform(),
+        "torch": torch.__version__,
+        "numpy": np.__version__,
+        "scikit_learn": sklearn.__version__,
+    }
+    (out_dir / "environment.json").write_text(json.dumps(environment, indent=2))
+    (out_dir / "training_history.json").write_text(json.dumps({"train_loss": training.train_loss, "model_validation_loss": training.val_loss}, indent=2))
     (out_dir / "metrics.json").write_text(json.dumps(json_ready(metrics), indent=2))
     (out_dir / "forcing_controls.json").write_text(json.dumps(json_ready(forcing_controls), indent=2))
     np.save(out_dir / "true_transition.npy", hmm.transition)
