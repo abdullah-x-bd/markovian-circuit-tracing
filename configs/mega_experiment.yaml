@@ -1,0 +1,71 @@
+artifact_version: 2
+protocol_status: exploratory_robustness_extension
+purpose: >
+  Budget-aware mega-suite extending MCT v0.2.0 across continuous observability,
+  random seeds, architectures, causal layers/positions, unsupervised K selection,
+  intervention dose response, natural donor patches, random HMM worlds, and
+  learning-time emergence. All primary analyses use calibration/selection/evaluation
+  separation and exact HMM ground truth.
+
+base_architecture:
+  name: canonical
+  d_model: 64
+  n_layers: 2
+  n_heads: 4
+  d_mlp: 128
+
+training:
+  seq_len: 40
+  train_sequences: 1200
+  model_val_sequences: 250
+  analysis_sequences: 800
+  max_epochs: 30
+  min_epochs: 6
+  bayes_gap_target: 0.02
+  batch_size: 256
+  learning_rate: 0.0003
+
+continuous_observability:
+  alphas: [0.00, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
+  seeds: [101, 113, 127, 139]
+  seeds_quick: [101, 113]
+
+mechanistic_deep_dive:
+  regimes: [easy, medium, hard]
+  seed: 211
+  positions: [4, 8, 12, 16, 24, 32]
+  forcing_position: 12
+  samples: 48
+  lambdas: [0.00, 0.25, 0.50, 0.75, 1.00, 1.25, 1.50]
+
+k_selection:
+  ks: [2, 3, 4, 5, 6, 7, 8, 10, 12]
+
+architecture_sweep:
+  regimes: [easy, medium, hard]
+  seeds: [307, 311]
+  seeds_quick: [307]
+  architectures:
+    - {name: tiny, d_model: 32, n_layers: 1, n_heads: 2, d_mlp: 64}
+    - {name: canonical, d_model: 64, n_layers: 2, n_heads: 4, d_mlp: 128}
+    - {name: wide, d_model: 128, n_layers: 2, n_heads: 4, d_mlp: 256}
+    - {name: deep, d_model: 64, n_layers: 4, n_heads: 4, d_mlp: 128}
+    - {name: deep_wide, d_model: 128, n_layers: 4, n_heads: 8, d_mlp: 256}
+
+random_hmm_worlds:
+  worlds: 30
+  worlds_quick: 12
+  seed_base: 10001
+  state_counts: [2, 3, 4, 6, 8]
+  persistence: [0.35, 0.60, 0.85]
+  observability: [0.25, 0.55, 0.85]
+
+training_emergence:
+  regimes: [easy, medium, hard]
+  seed: 401
+  checkpoints: [0, 1, 2, 4, 6, 8, 12, 16]
+
+seed_stress:
+  regimes: [easy, medium, hard]
+  seeds: [503, 509, 521, 523, 541, 547, 557, 563, 569, 571, 577, 587, 593, 599, 601, 607, 613, 617, 619, 631]
+  seeds_quick: [503, 509, 521, 523, 541]
