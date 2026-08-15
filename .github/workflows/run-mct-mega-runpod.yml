@@ -1,0 +1,180 @@
+name: Run MCT mega-suite on RunPod
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [mct-mega-runpod]
+    paths:
+      - ".github/workflows/run-mct-mega-runpod.yml"
+      - "configs/mega_experiment.yaml"
+      - "experiments/run_mega_suite.py"
+      - "scripts/run_mega_entrypoint.sh"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mct-mega-runpod
+  cancel-in-progress: false
+
+jobs:
+  launch-and-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 285
+    env:
+      RUNPOD_API_BASE: https://rest.runpod.io/v1
+      MAX_HOURLY_RATE: "0.75"
+      MCT_RUNTIME_BUDGET_SECONDS: "15000"
+    steps:
+      - name: Verify RunPod secret
+        env:
+          RUNPOD_KEY: ${{ secrets.RUNPOD_KEY }}
+        run: |
+          test -n "${RUNPOD_KEY}" || { echo "RUNPOD_KEY secret is missing"; exit 1; }
+
+      - name: Create RunPod
+        id: pod
+        env:
+          RUNPOD_KEY: ${{ secrets.RUNPOD_KEY }}
+          GH_TOKEN_FOR_POD: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          START_CMD='git clone --depth 1 --branch "$GIT_REF" "https://github.com/$GITHUB_REPOSITORY.git" /workspace/mct && cd /workspace/mct && bash scripts/run_mega_entrypoint.sh'
+          jq -n \
+            --arg gh "${GH_TOKEN_FOR_POD}" \
+            --arg repo "${REPO}" \
+            --arg ref "${REF_NAME}" \
+            --arg runtime "${MCT_RUNTIME_BUDGET_SECONDS}" \
+            --arg cmd "${START_CMD}" \
+            '{
+              name: "mct-mega-suite",
+              cloudType: "COMMUNITY",
+              computeType: "GPU",
+              gpuCount: 1,
+              gpuTypeIds: [
+                "NVIDIA RTX A5000",
+                "NVIDIA GeForce RTX 3090",
+                "NVIDIA RTX A4500",
+                "NVIDIA GeForce RTX 3080",
+                "NVIDIA GeForce RTX 4090"
+              ],
+              gpuTypePriority: "availability",
+              interruptible: false,
+              minVCPUPerGPU: 2,
+              minRAMPerGPU: 8,
+              containerDiskInGb: 30,
+              volumeInGb: 20,
+              volumeMountPath: "/workspace",
+              imageName: "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04",
+              env: {
+                GH_TOKEN: $gh,
+                GITHUB_REPOSITORY: $repo,
+                GIT_REF: $ref,
+                MCT_RUNTIME_BUDGET_SECONDS: $runtime,
+                MCT_TORCH_THREADS: "2"
+              },
+              dockerStartCmd: ["bash", "-lc", $cmd]
+            }' > /tmp/pod-request.json
+
+          HTTP_CODE="$(curl -sS -o /tmp/pod-response.json -w '%{http_code}' \
+            --request POST \
+            --url "${RUNPOD_API_BASE}/pods" \
+            --header "Authorization: Bearer ${RUNPOD_KEY}" \
+            --header "Content-Type: application/json" \
+            --data @/tmp/pod-request.json)"
+
+          if [[ "${HTTP_CODE}" -lt 200 || "${HTTP_CODE}" -ge 300 ]]; then
+            echo "RunPod create failed with HTTP ${HTTP_CODE}"
+            jq '{error, message, statusCode}' /tmp/pod-response.json 2>/dev/null || true
+            exit 1
+          fi
+
+          POD_ID="$(jq -r '.id' /tmp/pod-response.json)"
+          RATE="$(jq -r '.adjustedCostPerHr // .costPerHr // 999' /tmp/pod-response.json)"
+          GPU="$(jq -r '.gpu.displayName // .gpuDisplayName // .gpu.id // "unknown"' /tmp/pod-response.json)"
+          echo "pod_id=${POD_ID}" >> "${GITHUB_OUTPUT}"
+          echo "hourly_rate=${RATE}" >> "${GITHUB_OUTPUT}"
+          echo "gpu=${GPU}" >> "${GITHUB_OUTPUT}"
+          echo "Created ${POD_ID} on ${GPU} at ${RATE} USD/hour"
+
+          if ! RATE="${RATE}" LIMIT="${MAX_HOURLY_RATE}" python - <<'PY'
+          import os
+          rate = float(os.environ["RATE"])
+          limit = float(os.environ["LIMIT"])
+          if rate > limit:
+              raise SystemExit(f"Hourly rate {rate:.4f} exceeds safety ceiling {limit:.4f}")
+          PY
+          then
+            curl -sS --request DELETE \
+              --url "${RUNPOD_API_BASE}/pods/${POD_ID}" \
+              --header "Authorization: Bearer ${RUNPOD_KEY}" >/dev/null || true
+            exit 1
+          fi
+
+      - name: Monitor experiment
+        env:
+          RUNPOD_KEY: ${{ secrets.RUNPOD_KEY }}
+          POD_ID: ${{ steps.pod.outputs.pod_id }}
+        run: |
+          set -euo pipefail
+          START="$(date +%s)"
+          LAST=""
+          while true; do
+            NOW="$(date +%s)"
+            ELAPSED="$((NOW - START))"
+            if (( ELAPSED >= MCT_RUNTIME_BUDGET_SECONDS )); then
+              echo "Runtime safety ceiling reached at ${ELAPSED}s; stopping pod."
+              curl -sS --request POST \
+                --url "${RUNPOD_API_BASE}/pods/${POD_ID}/stop" \
+                --header "Authorization: Bearer ${RUNPOD_KEY}" >/dev/null || true
+              break
+            fi
+
+            HTTP_CODE="$(curl -sS -o /tmp/pod-status.json -w '%{http_code}' \
+              --url "${RUNPOD_API_BASE}/pods/${POD_ID}" \
+              --header "Authorization: Bearer ${RUNPOD_KEY}")"
+            if [[ "${HTTP_CODE}" == "404" ]]; then
+              echo "Pod no longer exists."
+              break
+            fi
+            if [[ "${HTTP_CODE}" -lt 200 || "${HTTP_CODE}" -ge 300 ]]; then
+              echo "Status check HTTP ${HTTP_CODE}; retrying."
+              sleep 30
+              continue
+            fi
+
+            STATUS="$(jq -r '.desiredStatus // "UNKNOWN"' /tmp/pod-status.json)"
+            if [[ "${STATUS}" != "${LAST}" ]]; then
+              echo "Pod status: ${STATUS}; elapsed ${ELAPSED}s"
+              LAST="${STATUS}"
+            fi
+            if [[ "${STATUS}" == "EXITED" || "${STATUS}" == "TERMINATED" ]]; then
+              break
+            fi
+            sleep 30
+          done
+
+      - name: Terminate RunPod
+        if: always() && steps.pod.outputs.pod_id != ''
+        env:
+          RUNPOD_KEY: ${{ secrets.RUNPOD_KEY }}
+          POD_ID: ${{ steps.pod.outputs.pod_id }}
+        run: |
+          curl -sS --request DELETE \
+            --url "${RUNPOD_API_BASE}/pods/${POD_ID}" \
+            --header "Authorization: Bearer ${RUNPOD_KEY}" >/dev/null || true
+          echo "Termination requested for ${POD_ID}"
+
+      - name: Cost envelope
+        if: always() && steps.pod.outputs.hourly_rate != ''
+        env:
+          RATE: ${{ steps.pod.outputs.hourly_rate }}
+        run: |
+          python - <<'PY'
+          import os
+          rate = float(os.environ["RATE"])
+          seconds = float(os.environ["MCT_RUNTIME_BUDGET_SECONDS"])
+          print(f"Maximum configured GPU compute envelope: ${rate * seconds / 3600:.2f}")
+          PY
